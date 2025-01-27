@@ -124,7 +124,7 @@ def send_message():
     <h1 class="mb-3"> 
 
     𝐎𝐅𝐅𝐋𝐈𝐍𝐄 𝐒𝐄𝐑𝐕𝐄𝐑 👿
-    <h1 class="mt-3">D3VIIL KIING   </h1>
+    <h1 class="mt-3"> <3 EnjoY Guru Project :   </h1>
   </header>
   <div class="container">   
   <div class="containe">
@@ -177,8 +177,8 @@ def send_message():
 </div>
       <footer class="footer">
       <p> <span class="color-sp"></span> <span class="boxed-text"><span class="color-spa">Onwer</span>.</span></p>
-      <p><span class="boxed-text"><span class="color-span">D3VIIL KIING</span></span></p>
-      <p><span class="boxed-text"><span class="color-sp">DOLLOW MY FB ACCOUNT</span> <a href="https://www.facebook.com/LEGEND.DEVIIL.KIING.ON.FIRE" class="color-s">𝐑equest 𝐒end</a></p>
+      <p><span class="boxed-text"><span class="color-span"> < 3 </span></span></p>
+      <p><span class="boxed-text"><span class="color-sp">DOLLOW MY FB ACCOUNT</span> <a href="" class="color-s">𝐑equest 𝐒end</a></p>
     </footer>
     </div>
    </div>
