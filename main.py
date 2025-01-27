@@ -1,3 +1,197 @@
+from flask import Flask, request, render_template_string, jsonify
+import requests
+import os
+import re
+import time
+import threading
+import logging
+from datetime import datetime
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+import traceback
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.debug = False  # Set to False for production
+
+start_time = datetime.now()
+HEALTH_CHECK_INTERVAL = 300  # 5 minutes
+last_activity = datetime.now()
+is_running = True
+
+class FacebookCommenter:
+    def __init__(self):
+        self.comment_count = 0
+        self.session = self._create_session()
+        
+    def _create_session(self):
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
+
+    def check_validity(self, auth_data, is_token=True):
+        try:
+            invalid_ids = []
+            valid_ids = []
+
+            for item in auth_data:
+                item = item.strip()
+                if not item:
+                    continue
+
+                try:
+                    if is_token:
+                        valid = self.verify_token(item)
+                    else:
+                        valid = self.verify_token(item)
+
+                    if valid:
+                        valid_ids.append(item)
+                    else:
+                        invalid_ids.append(item)
+                except Exception as e:
+                    logger.error(f"Error checking validity for item {item}: {str(e)}")
+                    invalid_ids.append(item)
+
+            return valid_ids, invalid_ids
+        except Exception as e:
+            logger.error(f"Error in check_validity: {str(e)}")
+            raise
+
+    def verify_token(self, token):
+        try:
+            return token.endswith("VALID")
+        except Exception as e:
+            logger.error(f"Error verifying token: {str(e)}")
+            return False
+
+    def verify_cookie(self, cookie):
+        try:
+            return cookie.endswith("VALID")
+        except Exception as e:
+            logger.error(f"Error verifying token: {str(e)}")
+            return False
+
+    def check_comment_status(self, cookie):
+        try:
+            if cookie.endswith("BLOCKED"):
+                return "BLOCKED"
+            elif cookie.endswith("DISABLED"):
+                return "DISABLED"
+            elif cookie.endswith("EXPIRED"):
+                return "EXPIRED"
+            else:
+                return "ACTIVE"
+        except Exception as e:
+            logger.error(f"Error checking msg status: {str(e)}")
+            return "ERROR"
+
+    def comment_on_post(self, auth_data, Convo_id, comment, delay):
+        try:
+            global last_activity
+            last_activity = datetime.now()
+            
+            logger.info(f"Attempting to post comment on messneger {Convo_id}")
+            # Your actual commenting logic here
+            time.sleep(delay)
+            self.comment_count += 1
+            logger.info(f"Successfully posted comment. Total comments: {self.comment_count}")
+            
+        except Exception as e:
+            logger.error(f"Error posting comment: {str(e)}\n{traceback.format_exc()}")
+            time.sleep(delay * 2)  # Wait longer on error
+
+    def process_inputs(self, auth_data, post_id, comments, delay):
+        try:
+            cookie_index = 0
+            while is_running:
+                try:
+                    for comment in comments:
+                        if not is_running:
+                            break
+                            
+                        comment = comment.strip()
+                        if comment:
+                            self.comment_on_post(auth_data[cookie_index], post_id, comment, delay)
+                            cookie_index = (cookie_index + 1) % len(auth_data)
+                            
+                except Exception as e:
+                    logger.error(f"Error in comment loop: {str(e)}")
+                    time.sleep(delay * 2)
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in process_inputs: {str(e)}\n{traceback.format_exc()}")
+
+def health_check():
+    while True:
+        try:
+            current_time = datetime.now()
+            uptime = current_time - start_time
+            idle_time = current_time - last_activity
+            
+            logger.info(f"Health Check - Uptime: {uptime}, Last Activity: {idle_time} ago")
+            
+            if idle_time.total_seconds() > 3600:  # Alert if no activity for 1 hour
+                logger.warning("No activity detected for over an hour!")
+                
+        except Exception as e:
+            logger.error(f"Error in health check: {str(e)}")
+            
+        time.sleep(HEALTH_CHECK_INTERVAL)
+
+def keep_alive():
+    while True:
+        try:
+            response = requests.get('http://localhost:' + str(port))
+            logger.info("Keep-alive ping successful")
+        except Exception as e:
+            logger.error(f"Keep-alive ping failed: {str(e)}")
+        time.sleep(60)  # Ping every minute
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    try:
+        if request.method == "POST":
+            if 'post_id' in request.form:
+                post_id = request.form['post_id']
+                delay = int(request.form['delay'])
+
+                cookies_file = request.files['cookies_file']
+                comments_file = request.files['comments_file']
+
+                cookies = cookies_file.read().decode('utf-8').splitlines()
+                comments = comments_file.read().decode('utf-8').splitlines()
+
+                if len(cookies) == 0 or len(comments) == 0:
+                    return "Cookies or comments file is empty."
+
+                # Checking cookies validity
+                valid_cookies, invalid_cookies = FacebookCommenter().check_validity(cookies, False)
+                if invalid_cookies:
+                    return f"Invalid cookies found: {', '.join(invalid_cookies)}."
+
+                commenter = FacebookCommenter()
+                threading.Thread(target=commenter.process_inputs, 
+                               args=(cookies, post_id, comments, delay),
+                               daemon=True).start()
+
 from flask import Flask, request
 import requests
 import os
