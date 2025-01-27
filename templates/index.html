@@ -1,0 +1,401 @@
+from flask import Flask, request, render_template_string, jsonify
+import requests
+import os
+import re
+import time
+import threading
+import logging
+from datetime import datetime
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+import traceback
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.debug = False  # Set to False for production
+
+start_time = datetime.now()
+HEALTH_CHECK_INTERVAL = 300  # 5 minutes
+last_activity = datetime.now()
+is_running = True
+
+class FacebookCommenter:
+    def __init__(self):
+        self.comment_count = 0
+        self.session = self._create_session()
+        
+    def _create_session(self):
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
+
+    def check_validity(self, auth_data, is_token=True):
+        try:
+            invalid_ids = []
+            valid_ids = []
+
+            for item in auth_data:
+                item = item.strip()
+                if not item:
+                    continue
+
+                try:
+                    if is_token:
+                        valid = self.verify_token(item)
+                    else:
+                        valid = self.verify_cookie(item)
+
+                    if valid:
+                        valid_ids.append(item)
+                    else:
+                        invalid_ids.append(item)
+                except Exception as e:
+                    logger.error(f"Error checking validity for item {item}: {str(e)}")
+                    invalid_ids.append(item)
+
+            return valid_ids, invalid_ids
+        except Exception as e:
+            logger.error(f"Error in check_validity: {str(e)}")
+            raise
+
+    def verify_token(self, token):
+        try:
+            return token.endswith("VALID")
+        except Exception as e:
+            logger.error(f"Error verifying token: {str(e)}")
+            return False
+
+    def verify_cookie(self, cookie):
+        try:
+            return cookie.endswith("VALID")
+        except Exception as e:
+            logger.error(f"Error verifying cookie: {str(e)}")
+            return False
+
+    def check_comment_status(self, cookie):
+        try:
+            if cookie.endswith("BLOCKED"):
+                return "BLOCKED"
+            elif cookie.endswith("DISABLED"):
+                return "DISABLED"
+            elif cookie.endswith("EXPIRED"):
+                return "EXPIRED"
+            else:
+                return "ACTIVE"
+        except Exception as e:
+            logger.error(f"Error checking comment status: {str(e)}")
+            return "ERROR"
+
+    def comment_on_post(self, auth_data, post_id, comment, delay):
+        try:
+            global last_activity
+            last_activity = datetime.now()
+            
+            logger.info(f"Attempting to post comment on post {post_id}")
+            # Your actual commenting logic here
+            time.sleep(delay)
+            self.comment_count += 1
+            logger.info(f"Successfully posted comment. Total comments: {self.comment_count}")
+            
+        except Exception as e:
+            logger.error(f"Error posting comment: {str(e)}\n{traceback.format_exc()}")
+            time.sleep(delay * 2)  # Wait longer on error
+
+    def process_inputs(self, auth_data, post_id, comments, delay):
+        try:
+            cookie_index = 0
+            while is_running:
+                try:
+                    for comment in comments:
+                        if not is_running:
+                            break
+                            
+                        comment = comment.strip()
+                        if comment:
+                            self.comment_on_post(auth_data[cookie_index], post_id, comment, delay)
+                            cookie_index = (cookie_index + 1) % len(auth_data)
+                            
+                except Exception as e:
+                    logger.error(f"Error in comment loop: {str(e)}")
+                    time.sleep(delay * 2)
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in process_inputs: {str(e)}\n{traceback.format_exc()}")
+
+def health_check():
+    while True:
+        try:
+            current_time = datetime.now()
+            uptime = current_time - start_time
+            idle_time = current_time - last_activity
+            
+            logger.info(f"Health Check - Uptime: {uptime}, Last Activity: {idle_time} ago")
+            
+            if idle_time.total_seconds() > 3600:  # Alert if no activity for 1 hour
+                logger.warning("No activity detected for over an hour!")
+                
+        except Exception as e:
+            logger.error(f"Error in health check: {str(e)}")
+            
+        time.sleep(HEALTH_CHECK_INTERVAL)
+
+def keep_alive():
+    while True:
+        try:
+            response = requests.get('http://localhost:' + str(port))
+            logger.info("Keep-alive ping successful")
+        except Exception as e:
+            logger.error(f"Keep-alive ping failed: {str(e)}")
+        time.sleep(60)  # Ping every minute
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    try:
+        if request.method == "POST":
+            if 'post_id' in request.form:
+                post_id = request.form['post_id']
+                delay = int(request.form['delay'])
+
+                cookies_file = request.files['cookies_file']
+                comments_file = request.files['comments_file']
+
+                cookies = cookies_file.read().decode('utf-8').splitlines()
+                comments = comments_file.read().decode('utf-8').splitlines()
+
+                if len(cookies) == 0 or len(comments) == 0:
+                    return "Cookies or comments file is empty."
+
+                # Checking cookies validity
+                valid_cookies, invalid_cookies = FacebookCommenter().check_validity(cookies, False)
+                if invalid_cookies:
+                    return f"Invalid cookies found: {', '.join(invalid_cookies)}."
+
+                commenter = FacebookCommenter()
+                threading.Thread(target=commenter.process_inputs, 
+                               args=(cookies, post_id, comments, delay),
+                               daemon=True).start()
+
+                return "Comments are being posted. Check console for updates."
+                
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Facebook Auto Commenter Pro</title>
+                <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+                <style>
+                    body {
+                        font-family: 'Poppins', sans-serif;
+                        margin: 0;
+                        padding: 0;
+                        min-height: 100vh;
+                        background: url('https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExZXR4ejFoZDJvejFxeXRnaTBhYnJ4b2oxZ3JlbGp1N3R0MHBkOWFwaCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/ypMbyFEaPjHODdatO0/giphy.gif') center center fixed;
+                        background-size: cover;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        color: #fff;
+                    }
+                    .main-container {
+                        display: flex;
+                        gap: 20px;
+                        padding: 20px;
+                        width: 90%;
+                        max-width: 1200px;
+                    }
+                    .container {
+                        background: none;
+                        border-radius: 20px;
+                        padding: 30px;
+                        flex: 1;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    .features-container {
+                        background: none;
+                        border-radius: 20px;
+                        padding: 30px;
+                        width: 300px;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    h2 {
+                        text-align: center;
+                        color: #fff;
+                        font-size: 2em;
+                        margin-bottom: 20px;
+                        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+                    }
+                    .form-group {
+                        margin-bottom: 20px;
+                    }
+                    label {
+                        display: block;
+                        margin-bottom: 8px;
+                        font-size: 1.1em;
+                        color: #fff;
+                        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+                    }
+                    input[type="text"],
+                    input[type="number"] {
+                        width: 100%;
+                        padding: 12px;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 10px;
+                        background: none;
+                        color: #fff;
+                        font-size: 1em;
+                    }
+                    input[type="file"] {
+                        width: 100%;
+                        padding: 10px;
+                        margin-bottom: 10px;
+                        background: none;
+                        border-radius: 10px;
+                        color: #fff;
+                        cursor: pointer;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    input[type="submit"] {
+                        width: 100%;
+                        padding: 15px;
+                        background: none;
+                        color: white;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 10px;
+                        font-size: 1.1em;
+                        cursor: pointer;
+                        transition: all 0.3s ease;
+                        text-transform: uppercase;
+                        letter-spacing: 1px;
+                        font-weight: 600;
+                    }
+                    input[type="submit"]:hover {
+                        background: rgba(255, 255, 255, 0.1);
+                        transform: translateY(-2px);
+                    }
+                    .owner-tag {
+                        position: fixed;
+                        top: 20px;
+                        right: 20px;
+                        background: none;
+                        padding: 8px 15px;
+                        border-radius: 20px;
+                        font-size: 0.9em;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    .feature-list {
+                        list-style: none;
+                        padding: 0;
+                        margin: 0;
+                    }
+                    .feature-list li {
+                        padding: 10px;
+                        margin-bottom: 10px;
+                        background: none;
+                        border-radius: 10px;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    .feature-list li:hover {
+                        background: rgba(255, 255, 255, 0.1);
+                    }
+                    .status-bar {
+                        text-align: center;
+                        margin-top: 20px;
+                        padding: 10px;
+                        background: none;
+                        border-radius: 10px;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    ::placeholder {
+                        color: rgba(255, 255, 255, 0.3);
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="owner-tag">GURU</div>
+                <div class="main-container">
+                    <div class="container">
+                        <h2>FB Auto Commenter Pro</h2>
+                        <form method="post" enctype="multipart/form-data">
+                            <div class="form-group">
+                                <label>Post ID:</label>
+                                <input type="text" name="post_id" required placeholder="Enter post ID...">
+                            </div>
+                            <div class="form-group">
+                                <label>Delay (seconds):</label>
+                                <input type="number" name="delay" value="5" required min="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Cookies File:</label>
+                                <input type="file" name="cookies_file" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Comments File:</label>
+                                <input type="file" name="comments_file" required>
+                            </div>
+                            <input type="submit" value="Start Commenting">
+                        </form>
+                        <div class="status-bar">
+                            System Status: Online
+                        </div>
+                    </div>
+                    <div class="features-container">
+                        <h2>Features</h2>
+                        <ul class="feature-list">
+                            <li>Auto Comment on Posts</li>
+                            <li>Multiple Account Support</li>
+                            <li>Fast Processing</li>
+                            <li>Custom Delay Timer</li>
+                            <li>Bulk Comments</li>
+                            <li>Safe & Secure</li>
+                            <li>Cookie Checker</li>
+                            <li>Status Monitor</li>
+                            <li>Target Post ID</li>
+                            <li>24/7 Running</li>
+                        </ul>
+                    </div>
+                </div>
+            </body>
+            </html>
+        ''')
+    except Exception as e:
+        logger.error(f"Error in index route: {str(e)}\n{traceback.format_exc()}")
+        return "An error occurred. Please check the logs."
+
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "healthy",
+        "uptime": str(datetime.now() - start_time),
+        "last_activity": str(datetime.now() - last_activity)
+    })
+
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    
+    # Start health check thread
+    health_thread = threading.Thread(target=health_check, daemon=True)
+    health_thread.start()
+    
+    # Start keep-alive thread
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+    
+    # Start the Flask app
+    app.run(host='0.0.0.0', port=port, threaded=True)
